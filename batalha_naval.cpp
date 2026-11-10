@@ -114,6 +114,14 @@ public:
         placeShip("DE", 2, 'I', 4, 'H');
     }
 
+    std::string getFleetString() const {
+        std::string result = "FROTA";
+        for (const auto& ship : ships) {
+            result += " " + ship.code + ":" + ship.startRow + std::to_string(ship.startCol) + ":" + ship.orientation;
+        }
+        return result;
+    }
+
     std::string receiveShot(char row, int col, bool& isGameOver) {
         int r = row - 'A';
         int c = col - 1;
@@ -124,21 +132,18 @@ public:
 
         char& cell = grid[r][c];
         if (cell == '~') {
-            cell = 'O'; // Tiro na agua
+            cell = 'O';
             return "AGUA";
         } else if (cell == 'O' || cell == 'X') {
             return "ERRO Coordenada ja usada";
         } else {
-            // Acertou parte de um navio
             char shipChar = cell;
-            cell = 'X'; // Tiro certeiro
+            cell = 'X';
 
-            // Encontrar qual navio foi atingido e verificar se afundou
             for (auto& ship : ships) {
                 if (ship.code[0] == shipChar) {
                     ship.hits++;
                     if (ship.hits == ship.size) {
-                        // Verificar se toda a frota foi afundada
                         bool allSunk = true;
                         for (const auto& s : ships) {
                             if (s.hits < s.size) {
@@ -249,6 +254,7 @@ int main(int argc, char* argv[]) {
         std::string ip = argv[2];
         int port = std::stoi(argv[3]);
         if (argc < 5) {
+            std::cerr << "Error: Nickname missing for --connect\n";
             printUsage(argv[0]);
             return 1;
         }
@@ -273,7 +279,7 @@ int main(int argc, char* argv[]) {
             if (tcpBuffer.receiveMessage(peerReady) && peerReady == "PRONTO") {
                 std::cout << "[Protocol] Game started!\n";
 
-                bool myTurn = isHost; // Host shoots first
+                bool myTurn = isHost;
                 int mySeq = 0;
                 int peerLastSeq = 0;
                 bool gameOver = false;
@@ -315,7 +321,6 @@ int main(int argc, char* argv[]) {
                             ss >> seq >> coordStr;
 
                             if (seq <= peerLastSeq) {
-                                // Duplicate sequence handling: re-send previous result or handle safely
                                 continue;
                             }
                             peerLastSeq = seq;
@@ -339,6 +344,18 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 }
+
+                // Final Fleet Conference
+                std::string myFleetMsg = myBoard.getFleetString();
+                tcpBuffer.sendMessage(myFleetMsg);
+                std::cout << "[Protocol] Sent final fleet configuration: " << myFleetMsg << "\n";
+
+                std::string peerFleetMsg;
+                if (tcpBuffer.receiveMessage(peerFleetMsg)) {
+                    std::cout << "[Protocol] Received opponent fleet configuration: " << peerFleetMsg << "\n";
+                }
+
+                tcpBuffer.sendMessage("TCHAU");
             }
         }
 
