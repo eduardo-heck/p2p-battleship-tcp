@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <vector>
 #include <map>
+#include <sstream>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -17,10 +18,10 @@ struct Ship {
     int size;
     char startRow;
     int startCol;
-    char orientation; // 'H' ou 'V'
+    char orientation;
+    int hits;
 };
 
-// TCPBuffer handles continuous byte streams from TCP sockets and extracts messages delimited by '\n'
 class TCPBuffer {
 private:
     int socketFd;
@@ -80,7 +81,6 @@ public:
         int r = row - 'A';
         int c = col - 1;
 
-        // Check boundaries and overlapping
         if (orientation == 'H') {
             if (c + size > BOARD_SIZE) return false;
             for (int i = 0; i < size; ++i) {
@@ -101,18 +101,62 @@ public:
             return false;
         }
 
-        ships.push_back({code, size, row, col, orientation});
+        ships.push_back({code, size, row, col, orientation, 0});
         return true;
     }
 
     void setupDefaultFleet() {
-        // Exemplo de posicionamento válido padrão para testes
-        placeShip("PA", 5, 'A', 1, 'H'); // Porta-aviões
-        placeShip("EN", 4, 'C', 1, 'H'); // Encouraçado
-        placeShip("CR", 3, 'E', 1, 'H'); // Cruzador 1
-        placeShip("CR", 3, 'G', 1, 'H'); // Cruzador 2
-        placeShip("DE", 2, 'I', 1, 'H'); // Destróier 1
-        placeShip("DE", 2, 'I', 4, 'H'); // Destróier 2
+        placeShip("PA", 5, 'A', 1, 'H');
+        placeShip("EN", 4, 'C', 1, 'H');
+        placeShip("CR", 3, 'E', 1, 'H');
+        placeShip("CR", 3, 'G', 1, 'H');
+        placeShip("DE", 2, 'I', 1, 'H');
+        placeShip("DE", 2, 'I', 4, 'H');
+    }
+
+    std::string receiveShot(char row, int col, bool& isGameOver) {
+        int r = row - 'A';
+        int c = col - 1;
+
+        if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) {
+            return "ERRO Coordenada invalida";
+        }
+
+        char& cell = grid[r][c];
+        if (cell == '~') {
+            cell = 'O'; // Tiro na agua
+            return "AGUA";
+        } else if (cell == 'O' || cell == 'X') {
+            return "ERRO Coordenada ja usada";
+        } else {
+            // Acertou parte de um navio
+            char shipChar = cell;
+            cell = 'X'; // Tiro certeiro
+
+            // Encontrar qual navio foi atingido e verificar se afundou
+            for (auto& ship : ships) {
+                if (ship.code[0] == shipChar) {
+                    ship.hits++;
+                    if (ship.hits == ship.size) {
+                        // Verificar se toda a frota foi afundada
+                        bool allSunk = true;
+                        for (const auto& s : ships) {
+                            if (s.hits < s.size) {
+                                allSunk = false;
+                                break;
+                            }
+                        }
+                        if (allSunk) {
+                            isGameOver = true;
+                            return "AFUNDOU " + ship.code + " FIM";
+                        }
+                        return "AFUNDOU " + ship.code;
+                    }
+                    return "ACERTOU";
+                }
+            }
+            return "ACERTOU";
+        }
     }
 
     void printBoard() const {
@@ -135,86 +179,53 @@ void printUsage(const char* programName) {
 
 int startServer(int port) {
     int serverFd = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverFd < 0) {
-        std::cerr << "Error creating socket." << std::endl;
-        return -1;
-    }
-
+    if (serverFd < 0) return -1;
     int opt = 1;
     setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
-
     if (bind(serverFd, (struct sockaddr*)&address, sizeof(address)) < 0) {
-        std::cerr << "Bind failed on port " << port << std::endl;
         close(serverFd);
         return -1;
     }
-
     if (listen(serverFd, 1) < 0) {
-        std::cerr << "Listen failed." << std::endl;
         close(serverFd);
         return -1;
     }
-
     std::cout << "[Host] Waiting for incoming connection on port " << port << "...\n";
     sockaddr_in clientAddress{};
     socklen_t clientLen = sizeof(clientAddress);
     int clientFd = accept(serverFd, (struct sockaddr*)&clientAddress, &clientLen);
-    
     close(serverFd);
-    if (clientFd < 0) {
-        std::cerr << "Accept failed." << std::endl;
-        return -1;
-    }
-
-    std::cout << "[Host] Peer connected successfully!\n";
     return clientFd;
 }
 
 int startClient(const std::string& ip, int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        std::cerr << "Error creating socket." << std::endl;
-        return -1;
-    }
-
+    if (sock < 0) return -1;
     sockaddr_in servAddr{};
     servAddr.sin_family = AF_INET;
     servAddr.sin_port = htons(port);
-
     if (inet_pton(AF_INET, ip.c_str(), &servAddr.sin_addr) <= 0) {
-        std::cerr << "Invalid address / Address not supported: " << ip << std::endl;
         close(sock);
         return -1;
     }
-
     std::cout << "[Guest] Connecting to " << ip << ":" << port << "...\n";
     if (connect(sock, (struct sockaddr*)&servAddr, sizeof(servAddr)) < 0) {
-        std::cerr << "Connection failed." << std::endl;
         close(sock);
         return -1;
     }
-
-    std::cout << "[Guest] Connected to host successfully!\n";
     return sock;
 }
 
 bool performHandshake(TCPBuffer& tcpBuffer, const std::string& nickname) {
     std::string olaMsg = "OLA " + PROTOCOL_VERSION + " " + nickname;
     if (!tcpBuffer.sendMessage(olaMsg)) return false;
-
     std::string response;
     if (!tcpBuffer.receiveMessage(response)) return false;
-
-    if (response.rfind("OLA ", 0) != 0) {
-        std::cerr << "Invalid handshake response: " << response << "\n";
-        return false;
-    }
-
+    if (response.rfind("OLA ", 0) != 0) return false;
     std::cout << "[Protocol] Peer handshake received: " << response << "\n";
     return true;
 }
@@ -226,10 +237,11 @@ int main(int argc, char* argv[]) {
     }
 
     std::string mode = argv[1];
+    bool isHost = (mode == "--listen");
     int socketFd = -1;
     std::string nickname;
 
-    if (mode == "--listen") {
+    if (isHost) {
         int port = std::stoi(argv[2]);
         nickname = argv[3];
         socketFd = startServer(port);
@@ -237,7 +249,6 @@ int main(int argc, char* argv[]) {
         std::string ip = argv[2];
         int port = std::stoi(argv[3]);
         if (argc < 5) {
-            std::cerr << "Error: Nickname missing for --connect\n";
             printUsage(argv[0]);
             return 1;
         }
@@ -250,22 +261,84 @@ int main(int argc, char* argv[]) {
 
     if (socketFd >= 0) {
         TCPBuffer tcpBuffer(socketFd);
-
-        // Initialize board and setup fleet
         Board myBoard;
         myBoard.setupDefaultFleet();
-        std::cout << "[Game] Fleet positioned successfully. Your board:\n";
+
+        std::cout << "[Game] Fleet positioned. Your board:\n";
         myBoard.printBoard();
 
         if (performHandshake(tcpBuffer, nickname)) {
-            std::cout << "[Protocol] Handshake successful! Sending PRONTO...\n";
             tcpBuffer.sendMessage("PRONTO");
-
             std::string peerReady;
             if (tcpBuffer.receiveMessage(peerReady) && peerReady == "PRONTO") {
-                std::cout << "[Protocol] Both peers are PRONTO! Game can start.\n";
-            } else {
-                std::cout << "[Protocol] Expected PRONTO from peer, got: " << peerReady << "\n";
+                std::cout << "[Protocol] Game started!\n";
+
+                bool myTurn = isHost; // Host shoots first
+                int mySeq = 0;
+                int peerLastSeq = 0;
+                bool gameOver = false;
+
+                while (!gameOver) {
+                    if (myTurn) {
+                        std::cout << "\n--- YOUR TURN ---\n";
+                        std::cout << "Enter coordinate to shoot (e.g., B7): ";
+                        std::string coord;
+                        if (!(std::cin >> coord) || coord.length() < 2) break;
+
+                        mySeq++;
+                        std::string tiroMsg = "TIRO " + std::to_string(mySeq) + " " + coord;
+                        tcpBuffer.sendMessage(tiroMsg);
+                        std::cout << "[Sent] " << tiroMsg << ". Waiting for result...\n";
+
+                        std::string resultMsg;
+                        if (!tcpBuffer.receiveMessage(resultMsg)) break;
+                        std::cout << "[Received] " << resultMsg << "\n";
+
+                        if (resultMsg.find("FIM") != std::string::npos) {
+                            std::cout << "Congratulations! You sunk all enemy ships!\n";
+                            gameOver = true;
+                        }
+                        myTurn = false;
+                    } else {
+                        std::cout << "\n--- OPPONENT'S TURN ---\n";
+                        std::string incomingMsg;
+                        if (!tcpBuffer.receiveMessage(incomingMsg)) break;
+                        std::cout << "[Received] " << incomingMsg << "\n";
+
+                        std::stringstream ss(incomingMsg);
+                        std::string type;
+                        ss >> type;
+
+                        if (type == "TIRO") {
+                            int seq;
+                            std::string coordStr;
+                            ss >> seq >> coordStr;
+
+                            if (seq <= peerLastSeq) {
+                                // Duplicate sequence handling: re-send previous result or handle safely
+                                continue;
+                            }
+                            peerLastSeq = seq;
+
+                            char r = coordStr[0];
+                            int c = std::stoi(coordStr.substr(1));
+
+                            bool isGameOver = false;
+                            std::string res = myBoard.receiveShot(r, c, isGameOver);
+                            std::string resultReply = "RESULTADO " + std::to_string(seq) + " " + res;
+                            tcpBuffer.sendMessage(resultReply);
+                            std::cout << "[Sent] " << resultReply << "\n";
+
+                            if (isGameOver) {
+                                std::cout << "All your ships were sunk! Game Over.\n";
+                                gameOver = true;
+                            }
+                            myTurn = true;
+                        } else if (type == "TCHAU") {
+                            break;
+                        }
+                    }
+                }
             }
         }
 
