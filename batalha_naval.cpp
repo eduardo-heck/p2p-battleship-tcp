@@ -3,12 +3,22 @@
 #include <cstring>
 #include <cstdlib>
 #include <vector>
+#include <map>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netdb.h>
 
 const std::string PROTOCOL_VERSION = "1.0";
+const int BOARD_SIZE = 10;
+
+struct Ship {
+    std::string code;
+    int size;
+    char startRow;
+    int startCol;
+    char orientation; // 'H' ou 'V'
+};
 
 // TCPBuffer handles continuous byte streams from TCP sockets and extracts messages delimited by '\n'
 class TCPBuffer {
@@ -53,6 +63,67 @@ public:
             outMessage.pop_back();
         }
         return true;
+    }
+};
+
+class Board {
+private:
+    std::vector<std::vector<char>> grid;
+    std::vector<Ship> ships;
+
+public:
+    Board() {
+        grid = std::vector<std::vector<char>>(BOARD_SIZE, std::vector<char>(BOARD_SIZE, '~'));
+    }
+
+    bool placeShip(const std::string& code, int size, char row, int col, char orientation) {
+        int r = row - 'A';
+        int c = col - 1;
+
+        // Check boundaries and overlapping
+        if (orientation == 'H') {
+            if (c + size > BOARD_SIZE) return false;
+            for (int i = 0; i < size; ++i) {
+                if (grid[r][c + i] != '~') return false;
+            }
+            for (int i = 0; i < size; ++i) {
+                grid[r][c + i] = code[0];
+            }
+        } else if (orientation == 'V') {
+            if (r + size > BOARD_SIZE) return false;
+            for (int i = 0; i < size; ++i) {
+                if (grid[r + i][c] != '~') return false;
+            }
+            for (int i = 0; i < size; ++i) {
+                grid[r + i][c] = code[0];
+            }
+        } else {
+            return false;
+        }
+
+        ships.push_back({code, size, row, col, orientation});
+        return true;
+    }
+
+    void setupDefaultFleet() {
+        // Exemplo de posicionamento válido padrão para testes
+        placeShip("PA", 5, 'A', 1, 'H'); // Porta-aviões
+        placeShip("EN", 4, 'C', 1, 'H'); // Encouraçado
+        placeShip("CR", 3, 'E', 1, 'H'); // Cruzador 1
+        placeShip("CR", 3, 'G', 1, 'H'); // Cruzador 2
+        placeShip("DE", 2, 'I', 1, 'H'); // Destróier 1
+        placeShip("DE", 2, 'I', 4, 'H'); // Destróier 2
+    }
+
+    void printBoard() const {
+        std::cout << "   1 2 3 4 5 6 7 8 9 10\n";
+        for (int i = 0; i < BOARD_SIZE; ++i) {
+            std::cout << (char)('A' + i) << "  ";
+            for (int j = 0; j < BOARD_SIZE; ++j) {
+                std::cout << grid[i][j] << " ";
+            }
+            std::cout << "\n";
+        }
     }
 };
 
@@ -133,21 +204,12 @@ int startClient(const std::string& ip, int port) {
 }
 
 bool performHandshake(TCPBuffer& tcpBuffer, const std::string& nickname) {
-    // Send OLA message
     std::string olaMsg = "OLA " + PROTOCOL_VERSION + " " + nickname;
-    if (!tcpBuffer.sendMessage(olaMsg)) {
-        std::cerr << "Failed to send OLA message.\n";
-        return false;
-    }
+    if (!tcpBuffer.sendMessage(olaMsg)) return false;
 
-    // Receive OLA message from peer
     std::string response;
-    if (!tcpBuffer.receiveMessage(response)) {
-        std::cerr << "Failed to receive OLA response.\n";
-        return false;
-    }
+    if (!tcpBuffer.receiveMessage(response)) return false;
 
-    // Parse OLA: OLA <version> <nickname>
     if (response.rfind("OLA ", 0) != 0) {
         std::cerr << "Invalid handshake response: " << response << "\n";
         return false;
@@ -189,7 +251,12 @@ int main(int argc, char* argv[]) {
     if (socketFd >= 0) {
         TCPBuffer tcpBuffer(socketFd);
 
-        // Perform Handshake (OLA)
+        // Initialize board and setup fleet
+        Board myBoard;
+        myBoard.setupDefaultFleet();
+        std::cout << "[Game] Fleet positioned successfully. Your board:\n";
+        myBoard.printBoard();
+
         if (performHandshake(tcpBuffer, nickname)) {
             std::cout << "[Protocol] Handshake successful! Sending PRONTO...\n";
             tcpBuffer.sendMessage("PRONTO");
