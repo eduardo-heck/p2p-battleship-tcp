@@ -2,10 +2,60 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <vector>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netdb.h>
+
+// TCPBuffer handles continuous byte streams from TCP sockets and extracts messages delimited by '\n'
+class TCPBuffer {
+private:
+    int socketFd;
+    std::string buffer;
+
+public:
+    explicit TCPBuffer(int fd) : socketFd(fd) {}
+
+    // Sends a message ensuring it ends with '\n'
+    bool sendMessage(const std::string& message) {
+        std::string formattedMsg = message;
+        if (formattedMsg.empty() || formattedMsg.back() != '\n') {
+            formattedMsg += '\n';
+        }
+        ssize_t totalSent = 0;
+        ssize_t length = formattedMsg.size();
+        while (totalSent < length) {
+            ssize_t sent = send(socketFd, formattedMsg.c_str() + totalSent, length - totalSent, 0);
+            if (sent <= 0) return false;
+            totalSent += sent;
+        }
+        return true;
+    }
+
+    // Reads the next complete message delimited by '\n'
+    bool receiveMessage(std::string& outMessage) {
+        size_t pos = buffer.find('\n');
+        while (pos == std::string::npos) {
+            char tempBuffer[1024];
+            ssize_t bytesRead = recv(socketFd, tempBuffer, sizeof(tempBuffer), 0);
+            if (bytesRead <= 0) {
+                return false; // Connection closed or error
+            }
+            buffer.append(tempBuffer, bytesRead);
+            pos = buffer.find('\n');
+        }
+
+        outMessage = buffer.substr(0, pos);
+        buffer.erase(0, pos + 1);
+        
+        // Remove carriage return if present (\r\n)
+        if (!outMessage.empty() && outMessage.back() == '\r') {
+            outMessage.pop_back();
+        }
+        return true;
+    }
+};
 
 void printUsage(const char* programName) {
     std::cout << "Usage:\n"
@@ -45,7 +95,7 @@ int startServer(int port) {
     socklen_t clientLen = sizeof(clientAddress);
     int clientFd = accept(serverFd, (struct sockaddr*)&clientAddress, &clientLen);
     
-    close(serverFd); // Close listening socket as P2P uses 1-to-1 connection
+    close(serverFd);
     if (clientFd < 0) {
         std::cerr << "Accept failed." << std::endl;
         return -1;
@@ -115,9 +165,17 @@ int main(int argc, char* argv[]) {
     }
 
     if (socketFd >= 0) {
-        // Keep connection open for now; next steps will add the game protocol
-        std::cout << "Connection established. Press Enter to exit...\n";
-        std::cin.get();
+        TCPBuffer tcpBuffer(socketFd);
+
+        // Simple echo/test loop to verify framing
+        std::string incomingMsg;
+        std::cout << "Waiting for messages from peer (press Ctrl+C to exit)...\n";
+        while (tcpBuffer.receiveMessage(incomingMsg)) {
+            std::cout << "[Received]: " << incomingMsg << "\n";
+            // Echo back with prefix
+            tcpBuffer.sendMessage("ECHO " + incomingMsg);
+        }
+
         close(socketFd);
     }
 
