@@ -8,6 +8,8 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+const std::string PROTOCOL_VERSION = "1.0";
+
 // TCPBuffer handles continuous byte streams from TCP sockets and extracts messages delimited by '\n'
 class TCPBuffer {
 private:
@@ -17,7 +19,6 @@ private:
 public:
     explicit TCPBuffer(int fd) : socketFd(fd) {}
 
-    // Sends a message ensuring it ends with '\n'
     bool sendMessage(const std::string& message) {
         std::string formattedMsg = message;
         if (formattedMsg.empty() || formattedMsg.back() != '\n') {
@@ -33,14 +34,13 @@ public:
         return true;
     }
 
-    // Reads the next complete message delimited by '\n'
     bool receiveMessage(std::string& outMessage) {
         size_t pos = buffer.find('\n');
         while (pos == std::string::npos) {
             char tempBuffer[1024];
             ssize_t bytesRead = recv(socketFd, tempBuffer, sizeof(tempBuffer), 0);
             if (bytesRead <= 0) {
-                return false; // Connection closed or error
+                return false;
             }
             buffer.append(tempBuffer, bytesRead);
             pos = buffer.find('\n');
@@ -49,7 +49,6 @@ public:
         outMessage = buffer.substr(0, pos);
         buffer.erase(0, pos + 1);
         
-        // Remove carriage return if present (\r\n)
         if (!outMessage.empty() && outMessage.back() == '\r') {
             outMessage.pop_back();
         }
@@ -59,8 +58,8 @@ public:
 
 void printUsage(const char* programName) {
     std::cout << "Usage:\n"
-              << "  Host mode:    " << programName << " --listen <port>\n"
-              << "  Guest mode:   " << programName << " --connect <ip> <port>\n";
+              << "  Host mode:    " << programName << " --listen <port> <nickname>\n"
+              << "  Guest mode:   " << programName << " --connect <ip> <port> <nickname>\n";
 }
 
 int startServer(int port) {
@@ -133,31 +132,54 @@ int startClient(const std::string& ip, int port) {
     return sock;
 }
 
+bool performHandshake(TCPBuffer& tcpBuffer, const std::string& nickname) {
+    // Send OLA message
+    std::string olaMsg = "OLA " + PROTOCOL_VERSION + " " + nickname;
+    if (!tcpBuffer.sendMessage(olaMsg)) {
+        std::cerr << "Failed to send OLA message.\n";
+        return false;
+    }
+
+    // Receive OLA message from peer
+    std::string response;
+    if (!tcpBuffer.receiveMessage(response)) {
+        std::cerr << "Failed to receive OLA response.\n";
+        return false;
+    }
+
+    // Parse OLA: OLA <version> <nickname>
+    if (response.rfind("OLA ", 0) != 0) {
+        std::cerr << "Invalid handshake response: " << response << "\n";
+        return false;
+    }
+
+    std::cout << "[Protocol] Peer handshake received: " << response << "\n";
+    return true;
+}
+
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
+    if (argc < 4) {
         printUsage(argv[0]);
         return 1;
     }
 
     std::string mode = argv[1];
     int socketFd = -1;
+    std::string nickname;
 
     if (mode == "--listen") {
-        if (argc < 3) {
-            std::cerr << "Error: Port missing for --listen\n";
-            printUsage(argv[0]);
-            return 1;
-        }
         int port = std::stoi(argv[2]);
+        nickname = argv[3];
         socketFd = startServer(port);
     } else if (mode == "--connect") {
-        if (argc < 4) {
-            std::cerr << "Error: IP and Port missing for --connect\n";
+        std::string ip = argv[2];
+        int port = std::stoi(argv[3]);
+        if (argc < 5) {
+            std::cerr << "Error: Nickname missing for --connect\n";
             printUsage(argv[0]);
             return 1;
         }
-        std::string ip = argv[2];
-        int port = std::stoi(argv[3]);
+        nickname = argv[4];
         socketFd = startClient(ip, port);
     } else {
         printUsage(argv[0]);
@@ -167,13 +189,17 @@ int main(int argc, char* argv[]) {
     if (socketFd >= 0) {
         TCPBuffer tcpBuffer(socketFd);
 
-        // Simple echo/test loop to verify framing
-        std::string incomingMsg;
-        std::cout << "Waiting for messages from peer (press Ctrl+C to exit)...\n";
-        while (tcpBuffer.receiveMessage(incomingMsg)) {
-            std::cout << "[Received]: " << incomingMsg << "\n";
-            // Echo back with prefix
-            tcpBuffer.sendMessage("ECHO " + incomingMsg);
+        // Perform Handshake (OLA)
+        if (performHandshake(tcpBuffer, nickname)) {
+            std::cout << "[Protocol] Handshake successful! Sending PRONTO...\n";
+            tcpBuffer.sendMessage("PRONTO");
+
+            std::string peerReady;
+            if (tcpBuffer.receiveMessage(peerReady) && peerReady == "PRONTO") {
+                std::cout << "[Protocol] Both peers are PRONTO! Game can start.\n";
+            } else {
+                std::cout << "[Protocol] Expected PRONTO from peer, got: " << peerReady << "\n";
+            }
         }
 
         close(socketFd);
