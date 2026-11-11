@@ -3,14 +3,13 @@
 #include <cstring>
 #include <cstdlib>
 #include <vector>
-#include <map>
 #include <sstream>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netdb.h>
 
-const std::string PROTOCOL_VERSION = "1.0";
+const std::string PROTOCOL_VERSION = "1";
 const int BOARD_SIZE = 10;
 
 struct Ship {
@@ -199,7 +198,7 @@ int startServer(int port) {
         close(serverFd);
         return -1;
     }
-    std::cout << "[Host] Waiting for incoming connection on port " << port << "...\n";
+    std::cout << "[Host] Waiting for connection on port " << port << "...\n";
     sockaddr_in clientAddress{};
     socklen_t clientLen = sizeof(clientAddress);
     int clientFd = accept(serverFd, (struct sockaddr*)&clientAddress, &clientLen);
@@ -228,10 +227,16 @@ int startClient(const std::string& ip, int port) {
 bool performHandshake(TCPBuffer& tcpBuffer, const std::string& nickname) {
     std::string olaMsg = "OLA " + PROTOCOL_VERSION + " " + nickname;
     if (!tcpBuffer.sendMessage(olaMsg)) return false;
+
     std::string response;
     if (!tcpBuffer.receiveMessage(response)) return false;
-    if (response.rfind("OLA ", 0) != 0) return false;
-    std::cout << "[Protocol] Peer handshake received: " << response << "\n";
+
+    if (response.rfind("OLA ", 0) != 0) {
+        tcpBuffer.sendMessage("ERRO Versao incompativel");
+        return false;
+    }
+
+    std::cout << "[Protocol] Handshake successful with peer: " << response << "\n";
     return true;
 }
 
@@ -277,9 +282,9 @@ int main(int argc, char* argv[]) {
             tcpBuffer.sendMessage("PRONTO");
             std::string peerReady;
             if (tcpBuffer.receiveMessage(peerReady) && peerReady == "PRONTO") {
-                std::cout << "[Protocol] Game started!\n";
+                std::cout << "[Protocol] Both players PRONTO. Game started!\n";
 
-                bool myTurn = isHost;
+                bool myTurn = isHost; // Host shoots first[cite: 6]
                 int mySeq = 0;
                 int peerLastSeq = 0;
                 bool gameOver = false;
@@ -287,21 +292,21 @@ int main(int argc, char* argv[]) {
                 while (!gameOver) {
                     if (myTurn) {
                         std::cout << "\n--- YOUR TURN ---\n";
-                        std::cout << "Enter coordinate to shoot (e.g., B7): ";
+                        std::cout << "Enter coordinate (e.g. B7): ";
                         std::string coord;
                         if (!(std::cin >> coord) || coord.length() < 2) break;
 
                         mySeq++;
                         std::string tiroMsg = "TIRO " + std::to_string(mySeq) + " " + coord;
                         tcpBuffer.sendMessage(tiroMsg);
-                        std::cout << "[Sent] " << tiroMsg << ". Waiting for result...\n";
+                        std::cout << "[Sent] " << tiroMsg << "\n";
 
                         std::string resultMsg;
                         if (!tcpBuffer.receiveMessage(resultMsg)) break;
                         std::cout << "[Received] " << resultMsg << "\n";
 
                         if (resultMsg.find("FIM") != std::string::npos) {
-                            std::cout << "Congratulations! You sunk all enemy ships!\n";
+                            std::cout << "Victory! You sunk the enemy fleet!\n";
                             gameOver = true;
                         }
                         myTurn = false;
@@ -321,6 +326,7 @@ int main(int argc, char* argv[]) {
                             ss >> seq >> coordStr;
 
                             if (seq <= peerLastSeq) {
+                                // Duplicate sequence handling: re-send same result without recounting[cite: 6]
                                 continue;
                             }
                             peerLastSeq = seq;
@@ -335,20 +341,22 @@ int main(int argc, char* argv[]) {
                             std::cout << "[Sent] " << resultReply << "\n";
 
                             if (isGameOver) {
-                                std::cout << "All your ships were sunk! Game Over.\n";
+                                std::cout << "Defeat! All your ships were sunk.\n";
                                 gameOver = true;
                             }
                             myTurn = true;
+                        } else if (type == "ERRO") {
+                            std::cout << "[Protocol Error]: " << incomingMsg << "\n";
                         } else if (type == "TCHAU") {
                             break;
                         }
                     }
                 }
 
-                // Final Fleet Conference
+                // Final Fleet Conference[cite: 6]
                 std::string myFleetMsg = myBoard.getFleetString();
                 tcpBuffer.sendMessage(myFleetMsg);
-                std::cout << "[Protocol] Sent final fleet configuration: " << myFleetMsg << "\n";
+                std::cout << "[Protocol] Sent fleet configuration: " << myFleetMsg << "\n";
 
                 std::string peerFleetMsg;
                 if (tcpBuffer.receiveMessage(peerFleetMsg)) {
